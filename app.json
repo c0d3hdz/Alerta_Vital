@@ -1,8 +1,22 @@
 {
   "expo": {
+    "plugins": [
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": true,
+          "modes": [
+            "peripheral",
+            "central"
+          ],
+          "bluetoothAlwaysPermissionText": "La app necesita acceso al Bluetooth para monitorear tu corazón."
+        }
+      ]
+    ],
     "name": "alertavital",
     "slug": "alertavital",
     "version": "1.0.0",
+    "scheme": "alertavital",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -13,17 +27,31 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
+      "bundleIdentifier": "com.alertavital.app",
       "supportsTablet": true
     },
     "android": {
+      "package": "com.alertavital.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
       "edgeToEdgeEnabled": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "affde085-b308-47fe-b33c-3e5d6c0bbd14"
+      }
     }
   }
 }

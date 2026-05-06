@@ -1,69 +1,54 @@
 import React, { useEffect, useState } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { Platform, PermissionsAndroid, ActivityIndicator, View } from 'react-native';
-import LoginScreen from './src/screens/LoginScreen';
-import ScanScreen from './src/screens/ScanScreen';
-import DashboardScreen from './src/screens/DashboardScreen';
-const Stack = createNativeStackNavigator();
-
-const requestAndroidPermissions = async () => {
-  if (Platform.OS === 'android') {
-    const apiLevel = parseInt(Platform.Version.toString(), 10);
-    try {
-      if (apiLevel >= 31) {
-        await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        ]);
-      } else {
-        await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
-        );
-      }
-    } catch (err) {
-      console.warn('Error solicitando permisos:', err);
-    }
-  }
-};
-
+import { ActivityIndicator, View, Text, Platform } from 'react-native';
+import * as SecureStore from 'expo-secure-store';
+import AppNavigator from './src/navigation/AppNavigator';
+import { solicitarPermisosBluetooth } from './src/hooks/useBluetooth';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 export default function App() {
   const [isReady, setIsReady] = useState(false);
+  const [initialRouteName, setInitialRouteName] = useState('LoginScreen');
+  const [initialParams, setInitialParams] = useState(null);
 
   useEffect(() => {
-    requestAndroidPermissions().finally(() => {
+    const prepareApp = async () => {
+      const permisos = await solicitarPermisosBluetooth();
+      if (!permisos) {
+        console.warn('Permisos Bluetooth no concedidos. La aplicación no funcionará correctamente.'); 
+      }
+      try {
+        let storedUser = null;
+        if (Platform.OS === 'web') {
+          storedUser = localStorage.getItem('user');
+        } else {
+          storedUser = await SecureStore.getItemAsync('user');
+        }
+
+        if (storedUser) {
+          const user = JSON.parse(storedUser);
+          setInitialRouteName('ScanScreen');
+          setInitialParams({ user });
+        }
+      } catch (error) {
+        console.warn('Error leyendo sesión guardada:', error);
+      }
+
       setIsReady(true);
-    });
+    };
+
+    prepareApp();
   }, []);
 
   if (!isReady) {
     return (
-      <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}>
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
         <ActivityIndicator size="large" color="#4285F4" />
+        <Text style={{ marginTop: 20 }}>Solicitando permisos...</Text>
       </View>
     );
   }
-
   return (
-    <NavigationContainer>
-      <Stack.Navigator initialRouteName="LoginScreen">
-        <Stack.Screen 
-          name="LoginScreen" 
-          component={LoginScreen} 
-          options={{ headerShown: false }} 
-        />
-        <Stack.Screen 
-          name="ScanScreen" 
-          component={ScanScreen} 
-          options={{ title: 'Escanear' }} 
-        />
-        <Stack.Screen 
-          name="DashboardScreen" 
-          component={DashboardScreen} 
-          options={{ title: 'Dashboard' }} 
-        />
-      </Stack.Navigator>
-    </NavigationContainer>
+    <SafeAreaProvider>
+      <AppNavigator initialRouteName={initialRouteName} initialParams={initialParams} />
+    </SafeAreaProvider>
   );
 }

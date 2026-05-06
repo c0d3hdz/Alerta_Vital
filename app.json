@@ -11,12 +11,14 @@
           ],
           "bluetoothAlwaysPermissionText": "La app necesita acceso al Bluetooth para monitorear tu corazón."
         }
-      ]
+      ],
+      "expo-secure-store",
+      "expo-web-browser"
     ],
     "name": "alertavital",
     "slug": "alertavital",
     "version": "1.0.0",
-    "scheme": "alertavital",
+    "scheme": "com.alertavital.app",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -41,7 +43,10 @@
         "android.permission.BLUETOOTH_ADMIN",
         "android.permission.BLUETOOTH_CONNECT",
         "android.permission.BLUETOOTH_SCAN",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_CONNECTED_DEVICE",
+        "WAKE_LOCK"
       ],
       "edgeToEdgeEnabled": true
     },

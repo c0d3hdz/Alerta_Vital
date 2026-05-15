@@ -1,11 +1,11 @@
 import React from 'react';
-import { View, StyleSheet, Text } from 'react-native';
+import { View, StyleSheet, Text, ScrollView } from 'react-native';
 import { LineChart, Grid, YAxis } from 'react-native-svg-charts';
 import * as shape from 'd3-shape';
 import { Defs, LinearGradient, Stop } from 'react-native-svg';
 import { COLORS, SIZES } from '../constants/theme';
 
-export default function PulseChart({ data, color, height = 180, showTitle = true, showLegend = true, hideYAxis = false, containerStyle }) {
+export default function PulseChart({ data, color, height = 180, showTitle = true, showLegend = true, hideYAxis = false, scrollable = false, pointWidth = 14, containerStyle }) {
   const maxVal = Math.max(...data);
   const minVal = Math.min(...data);
   
@@ -15,6 +15,7 @@ export default function PulseChart({ data, color, height = 180, showTitle = true
   const calculatedMin = Math.max(0, minVal - padding);
 
   const finalColor = color || '#FF2D55';
+  const chartWidth = Math.max(data.length * pointWidth, 320);
 
   const Gradient = () => (
     <Defs key={'gradient'}>
@@ -24,6 +25,10 @@ export default function PulseChart({ data, color, height = 180, showTitle = true
         </LinearGradient>
     </Defs>
   );
+
+  const chartStyle = scrollable
+    ? { width: chartWidth, height: '100%', marginLeft: hideYAxis ? 0 : 8 }
+    : { flex: 1, marginLeft: hideYAxis ? 0 : 8 };
 
   return (
     <View style={[styles.container, containerStyle]}>
@@ -47,18 +52,24 @@ export default function PulseChart({ data, color, height = 180, showTitle = true
         )}
         
         <View style={[styles.chartContainer, hideYAxis && { marginLeft: 0 }]}> 
-          <LineChart
-            style={{ flex: 1, marginLeft: hideYAxis ? 0 : 8 }}
-            data={data}
-            yMin={calculatedMin}
-            yMax={calculatedMax}
-            svg={{ stroke: finalColor, strokeWidth: 2 }}
-            contentInset={{ top: 10, bottom: 10 }}
-            curve={shape.curveLinear}
+          <ScrollView
+            horizontal={scrollable}
+            showsHorizontalScrollIndicator={scrollable}
+            contentContainerStyle={scrollable ? { width: chartWidth } : undefined}
           >
-            <Grid svg={{ stroke: 'rgba(0,0,0,0.05)', strokeWidth: 1 }} />
-            <Gradient />
-          </LineChart>
+            <LineChart
+              style={chartStyle}
+              data={data}
+              yMin={calculatedMin}
+              yMax={calculatedMax}
+              svg={{ stroke: finalColor, strokeWidth: 3, strokeLinecap: 'round' }}
+              contentInset={{ top: 12, bottom: 20 }}
+              curve={shape.curveNatural}
+            >
+              <Grid svg={{ stroke: 'rgba(0,0,0,0.12)', strokeWidth: 1 }} />
+              <Gradient />
+            </LineChart>
+          </ScrollView>
         </View>
       </View>
       
@@ -100,6 +111,7 @@ const styles = StyleSheet.create({
   chartContainer: {
     flex: 1,
     height: 180,
+    paddingBottom: 8,
   },
   legendContainer: {
       flexDirection: 'row',

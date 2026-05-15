@@ -1,6 +1,4 @@
-// Si estás usando un teléfono físico, apunta al IP local de tu PC en la red Wi-Fi.
-// Ejemplo: 'http://192.168.0.31:4000' si ese es el IP de tu máquina.
-const API_BASE_URL = 'http://192.168.0.31:4000';
+const API_BASE_URL = 'http://localhost:4000';
 
 const request = async (path, options = {}) => {
   const response = await fetch(`${API_BASE_URL}${path}`, {

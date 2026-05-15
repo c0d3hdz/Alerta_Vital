@@ -23,14 +23,14 @@ app.post('/users', async (req, res) => {
     if (rows.length > 0) {
       const userId = rows[0].id;
       await pool.query(
-        'UPDATE users SET name = ?, email = ?, picture = ?, updated_at = NOW() WHERE id = ?',
+        'UPDATE users SET name = ?, email = ?, picture = ?, last_login = NOW() WHERE id = ?',
         [name, email || null, picture || null, userId]
       );
       return res.json({ id: userId, google_id, name, email, picture });
     }
 
     const [result] = await pool.query(
-      'INSERT INTO users (google_id, name, email, picture, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())',
+      'INSERT INTO users (google_id, name, email, picture, created_at, last_login) VALUES (?, ?, ?, ?, NOW(), NOW())',
       [google_id, name, email || null, picture || null]
     );
 

@@ -96,7 +96,11 @@ export default function DashboardScreen({ route }) {
             return;
         }
 
-        setStatusMsg(`Conectando al sensor ${deviceId}...`);
+        setStatusMsg((prev) =>
+            prev === `Conectando al sensor ${deviceId}...`
+                ? prev
+                : `Conectando al sensor ${deviceId}...`
+        );
 
         // --- INICIO CÓDIGO SIMULADOR ---
         if (deviceId.startsWith('SIMULADO')) {
@@ -119,18 +123,40 @@ export default function DashboardScreen({ route }) {
                 let simulatedBpm = currentBpm;
                 const cycleLength = 600; // ~2.5 minutos de demo para ver alertas con más rapidez
                 const cyclePos = tickCount % cycleLength;
+                const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+                const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-                // Simular arritmia cada ciclo corto para probar la detección local
-                if (cyclePos >= 560 && cyclePos < 590) {
-                    if (Math.random() > 0.4) {
-                        currentBpm += (Math.random() > 0.5 ? 1 : -1);
-                        currentBpm = Math.max(60, Math.min(90, currentBpm));
+                if (cyclePos >= 520 && cyclePos < 545) {
+                    // Patrón de irregularidad tipo fibrilación auricular / variabilidad alta
+                    currentBpm = clamp(currentBpm + randomInt(-2, 2), 60, 95);
+                    simulatedBpm = clamp(currentBpm + randomInt(-12, 12), 50, 120);
+                } else if (cyclePos >= 545 && cyclePos < 565) {
+                    // Taquicardia sostenida de inicio gradual
+                    currentBpm = clamp(currentBpm + 1, 80, 100);
+                    simulatedBpm = clamp(currentBpm + randomInt(5, 15), 85, 125);
+                } else if (cyclePos >= 565 && cyclePos < 585) {
+                    // Episodio de pico brusco / posible arritmia ventricular
+                    simulatedBpm = currentBpm + randomInt(18, 35);
+                } else if (cyclePos >= 585 && cyclePos < 610) {
+                    // Bradiarritmia sostenida
+                    currentBpm = clamp(currentBpm - 1, 42, 60);
+                    simulatedBpm = clamp(currentBpm + randomInt(-5, 5), 40, 65);
+                } else if (cyclePos >= 610 && cyclePos < 620) {
+                    // Contracciones prematuras aisladas (picos y caídas cortas)
+                    if (Math.random() > 0.5) {
+                        simulatedBpm = currentBpm + randomInt(18, 28);
+                    } else {
+                        simulatedBpm = currentBpm - randomInt(18, 28);
                     }
+                } else if (cyclePos >= 620 && cyclePos < 630) {
+                    // Ruido de señal/artifacto para probar tolerancia
+                    simulatedBpm = clamp(currentBpm + randomInt(-20, 20), 50, 120);
+                } else {
                     if (Math.random() > 0.6) {
-                        simulatedBpm = currentBpm + (Math.random() > 0.5 ? 7 : -7);
+                        currentBpm += (Math.random() > 0.5 ? 1 : -1);
+                        currentBpm = clamp(currentBpm, 60, 85);
                     }
-                } else if (cyclePos >= 590 && cyclePos <= 598) {
-                    simulatedBpm = currentBpm + (Math.random() > 0.5 ? 35 : -25); // Altibajos bruscos reales
+                    simulatedBpm = currentBpm;
                 }
 
                 setBpmActual(simulatedBpm);
@@ -331,8 +357,20 @@ export default function DashboardScreen({ route }) {
         navigation.goBack();
     };
 
+    const MIN_ALERT_DURATION_MS = 5000;
+    const PRE_ALERT_MS = 5000;
+    const PRE_ALERT_SAMPLES = 40; // 10 segundos de datos previos en simulación a 250ms por muestra
+    const MAX_ALERT_PREVIEW_SAMPLES = PRE_ALERT_SAMPLES + 120; // conserva buffer previo y parte del evento
     const formatTime = (timestamp) => timestamp ? new Date(timestamp).toLocaleTimeString() : '-';
     const computeAverageBpm = (values) => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
+    const computeMaxBpm = (values) => values.length ? Math.max(...values) : 0;
+    const computeMinBpm = (values) => values.length ? Math.min(...values) : 0;
+    const getAlertDurationMs = (alert) => alert?.durationMs ?? ((alert?.duration_sec || 0) * 1000);
+
+    const buildAlertPreviewData = (history, latestBpm) => {
+        const preAlert = history.slice(-PRE_ALERT_SAMPLES - 1, -1);
+        return [...preAlert, latestBpm];
+    };
 
     const setCurrentAlertSessionState = (session) => {
         currentAlertSessionRef.current = session;
@@ -348,14 +386,21 @@ export default function DashboardScreen({ route }) {
     const finalizeAlertSession = (session, latestBpm) => {
         if (!session) return;
         const previewData = [...session.previewData, latestBpm];
+        const durationMs = Date.now() - session.startTimestamp;
+        if (durationMs < MIN_ALERT_DURATION_MS) {
+            return;
+        }
+
         const avgBpm = computeAverageBpm(previewData);
         const completedSession = {
             ...session,
             timestamp: session.startTimestamp,
             endTimestamp: Date.now(),
             avgBpm,
+            maxBpm: computeMaxBpm(previewData),
+            minBpm: computeMinBpm(previewData),
             previewData,
-            durationMs: Date.now() - session.startTimestamp,
+            durationMs,
         };
         setAlerts((prev) => [{ ...completedSession }, ...prev].slice(0, 10));
         handleSaveAlert(completedSession);
@@ -376,15 +421,24 @@ export default function DashboardScreen({ route }) {
                     type: detected.type,
                     message: detected.message,
                     startTimestamp: Date.now(),
-                    previewData: [latestBpm],
+                    previewData: buildAlertPreviewData(historialBpm, latestBpm),
+                    consecutiveMatches: 1,
+                    isConfirmed: false,
                 });
                 return;
             }
 
             if (currentSession.type === detected.type && currentSession.message === detected.message) {
+                let previewData = [...currentSession.previewData, latestBpm];
+                if (previewData.length > MAX_ALERT_PREVIEW_SAMPLES) {
+                    previewData = previewData.slice(-MAX_ALERT_PREVIEW_SAMPLES);
+                }
+                const durationMs = Date.now() - currentSession.startTimestamp;
                 setCurrentAlertSessionState({
                     ...currentSession,
-                    previewData: [...currentSession.previewData.slice(-30), latestBpm],
+                    previewData,
+                    consecutiveMatches: (currentSession.consecutiveMatches || 0) + 1,
+                    isConfirmed: currentSession.isConfirmed || durationMs >= MIN_ALERT_DURATION_MS,
                 });
                 return;
             }
@@ -395,6 +449,8 @@ export default function DashboardScreen({ route }) {
                 message: detected.message,
                 startTimestamp: Date.now(),
                 previewData: [latestBpm],
+                consecutiveMatches: 1,
+                isConfirmed: false,
             });
             return;
         }
@@ -415,7 +471,7 @@ export default function DashboardScreen({ route }) {
 
     useEffect(() => {
         if (!activeAlert) {
-            setAlertFlash(false);
+            setAlertFlash((prev) => (prev ? false : prev));
             return;
         }
 
@@ -426,50 +482,63 @@ export default function DashboardScreen({ route }) {
     }, [activeAlert]);
 
     const evaluateBpmAlerts = (history) => {
-        if (!history || history.length < 60) return null;
+        if (!history || history.length < 50) return null;
 
         const recent = history.slice(-60);
-        const windowShort = recent.slice(-20);
-        const deltas = windowShort.slice(1).map((value, index) => value - windowShort[index]);
-        const positiveTrend = deltas.filter((delta) => delta >= 1).length;
-        const negativeTrend = deltas.filter((delta) => delta <= -1).length;
-        const maxDelta = Math.max(...deltas.map((delta) => Math.abs(delta)));
-        const largeJumps = deltas.filter((delta) => Math.abs(delta) >= 8).length;
-        const irregularBurst = deltas.slice(-10).filter((delta) => Math.abs(delta) >= 6).length;
+        const lastBpm = recent[recent.length - 1];
         const mean = recent.reduce((total, value) => total + value, 0) / recent.length;
         const variance = recent.reduce((total, value) => total + Math.pow(value - mean, 2), 0) / recent.length;
         const stdDev = Math.sqrt(variance);
-        const lastBpm = recent[recent.length - 1];
+        const deltas = recent.slice(1).map((value, index) => value - recent[index]);
+        const absDeltas = deltas.map((delta) => Math.abs(delta));
+        const largeJumps = absDeltas.filter((delta) => delta >= 15).length;
+        const veryLargeJump = absDeltas.some((delta) => delta >= 25);
+        const directionChanges = deltas.slice(-15).reduce((count, delta, index, array) => {
+            if (index === 0) return 0;
+            return count + (delta * array[index - 1] < 0 && Math.abs(delta) >= 5 && Math.abs(array[index - 1]) >= 5 ? 1 : 0);
+        }, 0);
+        const sustainedHigh = recent.slice(-20).every((value) => value >= 100);
+        const sustainedLow = recent.slice(-20).every((value) => value <= 55);
+        const sustainedRise = recent.slice(-15).every((value, index, array) => index === 0 || value >= array[index - 1]);
+        const sustainedFall = recent.slice(-15).every((value, index, array) => index === 0 || value <= array[index - 1]);
 
-        if (maxDelta >= 20) {
+        if (veryLargeJump) {
             return { type: 'anomaly', message: 'Cambio brusco de pulso detectado. Posible arritmia inmediata.' };
         }
 
-        if (irregularBurst >= 4) {
-            return { type: 'warning', message: 'Variabilidad irregular detectada. Posible arritmia temprana.' };
+        if (largeJumps >= 3 && stdDev >= 8) {
+            return { type: 'anomaly', message: 'Variabilidad cardiaca inestable detectada. Posible arritmia inmediata.' };
         }
 
-        if (largeJumps >= 2 && mean >= 75) {
-            return { type: 'warning', message: 'Picos irregulares en el pulso. Mantente atento.' };
+        if (directionChanges >= 3 && stdDev >= 7) {
+            return { type: 'warning', message: 'Pulso con oscilaciones rápidas e irregulares. Vigila el ritmo.' };
         }
 
-        if (positiveTrend >= 12 && mean >= 85) {
-            return { type: 'warning', message: 'Tendencia acelerada detectada. Posible evento arrítmico en breve.' };
+        if (sustainedHigh && mean >= 105) {
+            return { type: 'warning', message: 'Tachicardia sostenida detectada. Revisa al paciente.' };
         }
 
-        if (negativeTrend >= 12 && mean <= 65) {
-            return { type: 'warning', message: 'Descenso sostenido del pulso. Vigila bradicardia temprana.' };
+        if (sustainedLow && mean <= 52) {
+            return { type: 'warning', message: 'Bradicardia sostenida detectada. Consulta médica.' };
         }
 
-        if (stdDev >= 7 && mean >= 80) {
-            return { type: 'warning', message: 'Variabilidad irregular alta. Riesgo de irregularidad cardiaca.' };
+        if (sustainedRise && mean >= 90) {
+            return { type: 'warning', message: 'Incremento rápido de pulso. Puede indicar arritmia emergente.' };
         }
 
-        if (lastBpm >= 100) {
+        if (sustainedFall && mean <= 70) {
+            return { type: 'warning', message: 'Descenso progresivo de pulso. Atención recomendada.' };
+        }
+
+        if (stdDev >= 9 && mean >= 85) {
+            return { type: 'warning', message: 'Alta variabilidad de pulso. Riesgo de irregularidad cardiaca.' };
+        }
+
+        if (lastBpm >= 110) {
             return { type: 'warning', message: 'Pulso elevado sostenido. Revisa el estado en corto plazo.' };
         }
 
-        if (lastBpm <= 55) {
+        if (lastBpm <= 50) {
             return { type: 'warning', message: 'Pulso bajo sostenido. Podría requerir atención.' };
         }
 
@@ -626,15 +695,28 @@ export default function DashboardScreen({ route }) {
                                                 <Text style={styles.alertMetaValue}>{Math.round((Date.now() - currentAlertSession.startTimestamp) / 1000)} s</Text>
                                             </View>
                                         </View>
+                                        <View style={styles.alertMetaRow}>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Máximo</Text>
+                                                <Text style={styles.alertMetaValue}>{computeMaxBpm(currentAlertSession.previewData)} BPM</Text>
+                                            </View>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Mínimo</Text>
+                                                <Text style={styles.alertMetaValue}>{computeMinBpm(currentAlertSession.previewData)} BPM</Text>
+                                            </View>
+                                        </View>
                                         {currentAlertSession.previewData?.length > 0 && (
                                             <View style={styles.alertPreviewChart}>
                                                 <PulseChart
                                                     data={currentAlertSession.previewData}
                                                     color={currentAlertSession.type === 'anomaly' ? '#DC2626' : '#F59E0B'}
-                                                    height={100}
+                                                    height={140}
                                                     showTitle={false}
                                                     showLegend={false}
-                                                    hideYAxis={true}
+                                                    hideYAxis={false}
+                                                    scrollable={true}
+                                                    pointWidth={16}
+                                                    containerStyle={styles.alertChartContainer}
                                                 />
                                             </View>
                                         )}
@@ -664,7 +746,17 @@ export default function DashboardScreen({ route }) {
                                             </View>
                                             <View style={styles.alertMetaItem}>
                                                 <Text style={styles.alertMetaLabel}>Duración</Text>
-                                                <Text style={styles.alertMetaValue}>{Math.round((alert.durationMs || 0) / 1000)} s</Text>
+                                                <Text style={styles.alertMetaValue}>{Math.round(getAlertDurationMs(alert) / 1000)} s</Text>
+                                            </View>
+                                        </View>
+                                        <View style={styles.alertMetaRow}>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Máximo</Text>
+                                                <Text style={styles.alertMetaValue}>{alert.maxBpm ?? computeMaxBpm(alert.previewData || [])} BPM</Text>
+                                            </View>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Mínimo</Text>
+                                                <Text style={styles.alertMetaValue}>{alert.minBpm ?? computeMinBpm(alert.previewData || [])} BPM</Text>
                                             </View>
                                         </View>
                                         {alert.previewData?.length > 0 && (
@@ -672,10 +764,13 @@ export default function DashboardScreen({ route }) {
                                                 <PulseChart
                                                     data={alert.previewData}
                                                     color={alert.type === 'anomaly' ? '#DC2626' : '#F59E0B'}
-                                                    height={100}
+                                                    height={140}
                                                     showTitle={false}
                                                     showLegend={false}
-                                                    hideYAxis={true}
+                                                    hideYAxis={false}
+                                                    scrollable={true}
+                                                    pointWidth={16}
+                                                    containerStyle={styles.alertChartContainer}
                                                 />
                                             </View>
                                         )}
@@ -873,6 +968,11 @@ const styles = StyleSheet.create({
     },
     alertPreviewChart: {
         marginTop: 10,
+    },
+    alertChartContainer: {
+        backgroundColor: '#FFFFFF',
+        borderRadius: 12,
+        padding: 6,
     },
     ecgHeaderRow: {
         flexDirection: 'row',

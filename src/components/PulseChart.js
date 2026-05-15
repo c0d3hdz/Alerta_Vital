@@ -5,56 +5,56 @@ import * as shape from 'd3-shape';
 import { Defs, LinearGradient, Stop } from 'react-native-svg';
 import { COLORS, SIZES } from '../constants/theme';
 
-export default function PulseChart({ data, color }) {
-  // Ajuste dinámico del rango visible
+export default function PulseChart({ data, color, height = 180, showTitle = true, showLegend = true, hideYAxis = false, containerStyle }) {
   const maxVal = Math.max(...data);
   const minVal = Math.min(...data);
   
-  // Agregar margen superior e inferior del 15% para que no toque los bordes
   const range = maxVal - minVal;
   const padding = range === 0 ? 10 : range * 0.15;
   const calculatedMax = maxVal + padding;
   const calculatedMin = Math.max(0, minVal - padding);
 
-  const finalColor = color || COLORS.primary;
+  const finalColor = color || '#FF2D55';
 
   const Gradient = () => (
     <Defs key={'gradient'}>
         <LinearGradient id={'gradientPulse'} x1={'0%'} y1={'0%'} x2={'0%'} y2={'100%'}>
-            <Stop offset={'0%'} stopColor={finalColor} stopOpacity={0.2} />
+            <Stop offset={'0%'} stopColor={finalColor} stopOpacity={0.15} />
             <Stop offset={'100%'} stopColor={finalColor} stopOpacity={0.0} />
         </LinearGradient>
     </Defs>
   );
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Historial de pulsaciones</Text>
+    <View style={[styles.container, containerStyle]}>
+      {showTitle && <Text style={styles.title}>Historial de pulsaciones</Text>}
       
-      <View style={styles.chartWrapper}>
-        <YAxis
-            data={[calculatedMin, calculatedMax]}
-            min={calculatedMin}
-            max={calculatedMax}
-            contentInset={{ top: 10, bottom: 10 }}
-            svg={{
-                fill: COLORS.textMuted || 'grey',
-                fontSize: 10,
-                fontWeight: 'bold'
-            }}
-            numberOfTicks={5}
-            formatLabel={(value) => `${Math.round(value)}`}
-        />
+      <View style={[styles.chartWrapper, { height }]}> 
+        {!hideYAxis && (
+          <YAxis
+              data={[calculatedMin, calculatedMax]}
+              min={calculatedMin}
+              max={calculatedMax}
+              contentInset={{ top: 10, bottom: 10 }}
+              svg={{
+                  fill: COLORS.textMuted || 'grey',
+                  fontSize: 10,
+                  fontWeight: 'bold'
+              }}
+              numberOfTicks={5}
+              formatLabel={(value) => `${Math.round(value)}`}
+          />
+        )}
         
-        <View style={styles.chartContainer}>
+        <View style={[styles.chartContainer, hideYAxis && { marginLeft: 0 }]}> 
           <LineChart
-            style={{ flex: 1, marginLeft: 8 }}
+            style={{ flex: 1, marginLeft: hideYAxis ? 0 : 8 }}
             data={data}
             yMin={calculatedMin}
             yMax={calculatedMax}
-            svg={{ stroke: finalColor, strokeWidth: 3 }}
+            svg={{ stroke: finalColor, strokeWidth: 2 }}
             contentInset={{ top: 10, bottom: 10 }}
-            curve={shape.curveMonotoneX}
+            curve={shape.curveLinear}
           >
             <Grid svg={{ stroke: 'rgba(0,0,0,0.05)', strokeWidth: 1 }} />
             <Gradient />
@@ -62,12 +62,14 @@ export default function PulseChart({ data, color }) {
         </View>
       </View>
       
-      <View style={styles.legendContainer}>
-         <View style={styles.legendItem}>
-             <View style={[styles.legendColor, {backgroundColor: finalColor}]} />
-             <Text style={styles.legendText}>Latidos por Minuto (BPM)</Text>
-         </View>
-      </View>
+      {showLegend && (
+        <View style={styles.legendContainer}>
+           <View style={styles.legendItem}>
+               <View style={[styles.legendColor, {backgroundColor: finalColor}]} />
+               <Text style={styles.legendText}>Latidos por Minuto (BPM)</Text>
+           </View>
+        </View>
+      )}
     </View>
   );
 }

@@ -32,7 +32,7 @@ yarn-error.*
 
 # local env files
 .env*.local
-
+arduinoXDD.c++
 # typescript
 *.tsbuildinfo
 

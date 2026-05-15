@@ -15,7 +15,7 @@ export default function SelectedDeviceCard({ device, onConnect, onCancel }) {
         </View>
         <View style={styles.headerText}>
             <Text style={styles.titleInfo}>Sensor Preparado</Text>
-            <Text style={styles.deviceName} numberOfLines={1}>{device.name || 'Sensor Sin Nombre'}</Text>
+            <Text style={styles.deviceName} numberOfLines={1}>{device.name || device.localName || 'Sensor Sin Nombre'}</Text>
         </View>
       </View>
 

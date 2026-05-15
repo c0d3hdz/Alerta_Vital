@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Platform, View, StyleSheet, SafeAreaView, StatusBar } from 'react-native';
+import { Platform, View, StyleSheet, SafeAreaView, StatusBar, InteractionManager } from 'react-native';
 import { useBluetooth } from '../hooks/useBluetooth';
 import UserHeader from '../components/UserHeader';
 import DeviceList from '../components/DeviceList';
 import { COLORS } from '../constants/theme';
+import { registerDevice } from '../services/ApiService';
 
 export default function ScanScreen({ navigation, route }) {
   const user = route?.params?.user;
@@ -11,8 +12,19 @@ export default function ScanScreen({ navigation, route }) {
   const [selectedDevice, setSelectedDevice] = useState(null);
 
   useEffect(() => {
-    startScanning();
+    // Retrasar el escaneo bluetooth hasta que la transición gráfica de la pantalla haya terminado.
+    // Esto evita que dispositivos no muy potentes entren en colapso (OOM/Crash) por exceso de peticiones al puente JS-Nativo.
+    let timer;
+    const task = InteractionManager.runAfterInteractions(() => {
+        // En algunas tablets o teléfonos débiles, un pequeño timeout adicional asegura la estabilidad
+        timer = setTimeout(() => {
+          startScanning();
+        }, 500);
+    });
+
     return () => {
+      task.cancel();
+      if (timer) clearTimeout(timer);
       stopScanning();
     };
   }, []);
@@ -36,8 +48,21 @@ export default function ScanScreen({ navigation, route }) {
 
   const handleConnect = () => {
     if (!selectedDevice) return;
-    navigation.navigate('DashboardScreen', { deviceId: selectedDevice.id });
+
+    navigation.navigate('DashboardScreen', { deviceId: selectedDevice.id, user });
     setSelectedDevice(null);
+
+    if (user) {
+      registerDevice({
+        user_id: user.id || user.google_id,
+        device_id: selectedDevice.id,
+        name: selectedDevice.name || selectedDevice.localName || 'Dispositivo',
+        type: selectedDevice.id.startsWith('SIMULADO') ? 'simulated' : 'ble',
+        is_simulated: selectedDevice.id.startsWith('SIMULADO'),
+      }).catch((error) => {
+        console.warn('No se pudo registrar el dispositivo en el backend:', error);
+      });
+    }
   };
 
   const handleCancelSelection = () => {
@@ -45,7 +70,7 @@ export default function ScanScreen({ navigation, route }) {
     startScanning();
   };
 
-  const handleSkip = () => navigation.navigate('DashboardScreen');
+  const handleSkip = () => navigation.navigate('DashboardScreen', { user });
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -84,6 +109,6 @@ const styles = StyleSheet.create({
   },
   contentWrapper: {
     flex: 1,
-    marginTop: -20, // Reduces excessive gap between header and content
+    marginTop: -20, 
   }
 });

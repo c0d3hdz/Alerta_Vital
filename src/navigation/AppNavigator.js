@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import LoginScreen from '../screens/LoginScreen';
 import ScanScreen from '../screens/ScanScreen';
 import DashboardScreen from '../screens/DashboardScreen';
+import SettingsScreen from '../screens/SettingsScreen';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 const Stack = createNativeStackNavigator();
 
@@ -28,6 +29,11 @@ export default function AppNavigator({ initialRouteName = 'LoginScreen', initial
           <Stack.Screen
             name="DashboardScreen"
             component={DashboardScreen}
+            options={{ headerShown: false }}
+          />
+          <Stack.Screen
+            name="SettingsScreen"
+            component={SettingsScreen}
             options={{ headerShown: false }}
           />
         </Stack.Navigator>

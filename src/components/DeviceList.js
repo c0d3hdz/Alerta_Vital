@@ -31,7 +31,7 @@ export default function DeviceList({
                         <Text style={styles.deviceIconText}>📱</Text>
                     </View>
                     <View style={styles.deviceTextContainer}>
-                        <Text style={styles.deviceName} numberOfLines={1}>{item.name || 'Dispositivo Desconocido'}</Text>
+                        <Text style={styles.deviceName} numberOfLines={1}>{item.name || item.localName || 'Dispositivo Desconocido'}</Text>
                         <Text style={styles.deviceAddress}>{item.address || item.id}</Text>
                     </View>
                 </View>

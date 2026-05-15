@@ -1,8 +1,11 @@
 import React from 'react';
-import { View, Text, Image, StyleSheet } from 'react-native';
+import { View, Text, Image, StyleSheet, Pressable } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import { COLORS, SIZES } from '../constants/theme';
 
 export default function UserHeader({ user }) {
+  const navigation = useNavigation();
+
   return (
     <View style={styles.header}>
       {user?.picture ? (
@@ -16,12 +19,17 @@ export default function UserHeader({ user }) {
         <Text style={styles.welcomeText}>Bienvenido,</Text>
         <Text style={styles.userName}>{user?.name || 'Invitado'}</Text>
       </View>
+      <View style={{ flex: 1, alignItems: 'flex-end' }}>
+        <Pressable onPress={() => navigation.navigate('SettingsScreen')}>
+          <Text style={styles.buttonConfig}>⚙️</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  header:{
+  header: {
     flexDirection: 'row',
     justifyContent: 'flex-start',
     alignItems: 'center',
@@ -29,7 +37,7 @@ const styles = StyleSheet.create({
     paddingTop: SIZES.padding / 2,
     paddingBottom: 20,
   },
-  profileImage:{
+  profileImage: {
     width: 50,
     height: 50,
     borderRadius: 25,
@@ -39,13 +47,18 @@ const styles = StyleSheet.create({
     marginRight: SIZES.margin,
 
   },
-  welcomeText:{
+  welcomeText: {
     fontSize: 10,
     color: COLORS.textMuted,
   },
-  userName:{
-    fontSize: SIZES.title*0.4,
+  userName: {
+    fontSize: SIZES.title * 0.4,
     color: COLORS.text,
     fontWeight: 'bold',
+  },
+  buttonConfig: {
+    color: COLORS.primary,
+    fontSize: 34,
+    backgroundColor: 'transparent',
   },
 });

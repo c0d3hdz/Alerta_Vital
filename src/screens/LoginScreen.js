@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image, View, StyleSheet, Text, Pressable, TouchableOpacity, Platform } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import * as Google from 'expo-auth-session/providers/google';
@@ -7,9 +7,11 @@ import { makeRedirectUri } from 'expo-auth-session';
 import * as SecureStore from 'expo-secure-store';
 import { COLORS } from '../constants/theme';
 import HeroLogin from '../components/heroLogin';
+import { createOrUpdateUser } from '../services/ApiService';
 WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen({ navigation }) {
+    const [authInProgress, setAuthInProgress] = useState(false);
     const redirectUri = makeRedirectUri({
         native: 'com.alertavital.app:/oauth2redirect',
         scheme: 'com.alertavital.app',
@@ -43,6 +45,8 @@ export default function LoginScreen({ navigation }) {
     useEffect(() => {
         const procesarAutenticacion = async () => {
             if (response) {
+                setAuthInProgress(false);
+
                 if (response.type === 'success') {
                     const { authentication } = response;
                     await enviarTokenAlBackend(authentication.accessToken);
@@ -54,12 +58,33 @@ export default function LoginScreen({ navigation }) {
                         });
                         const userInfo = await userInfoResponse.json();
                         await guardarSesion(userInfo, authentication.accessToken);
-                        // Pasamos los datos del usuario a la pantalla de escaneo
-                        navigation.replace('ScanScreen', { user: userInfo });
+                        
+                        let backendUser = null;
+
+                        try {
+                            backendUser = await createOrUpdateUser({
+                                google_id: userInfo.id,
+                                name: userInfo.name,
+                                email: userInfo.email,
+                                picture: userInfo.picture,
+                            });
+                        } catch (apiError) {
+                            console.warn('No se pudo guardar el usuario en el backend:', apiError);
+                        }
+
+                        const userToSend = backendUser ? { ...userInfo, id: backendUser.id } : userInfo;
+
+                        // Retrasar levemente la navegación para no ahogar la memoria en celulares básicos
+                        setTimeout(() => {
+                           navigation.replace('ScanScreen', { user: userToSend });
+                        }, 300);
+                        
                     } catch (error) {
                         console.error("Error obteniendo datos del usuario", error);
                         await guardarSesion({ name: 'Usuario' }, authentication.accessToken);
-                        navigation.replace('ScanScreen');
+                        setTimeout(() => {
+                           navigation.replace('ScanScreen');
+                        }, 300);
                     }
                 } else if (response.type === 'error' || response.type === 'cancel') {
                     console.warn("Autenticación fallida o cancelada:", response.error);
@@ -78,13 +103,19 @@ export default function LoginScreen({ navigation }) {
                     style={({ pressed }) => [
                         styles.button,
                         pressed && styles.buttonPressed,
-                        !request && styles.buttonDisabled,
+                        (!request || authInProgress) && styles.buttonDisabled,
                     ]}
-                    disabled={!request}
-                    onPress={() => promptAsync().catch((e) => console.log("Error en autenticación:", e))}
+                    disabled={!request || authInProgress}
+                    onPress={() => {
+                        setAuthInProgress(true);
+                        promptAsync().catch((e) => {
+                            console.log("Error en autenticación:", e);
+                            setAuthInProgress(false);
+                        });
+                    }}
                 >
                     <FontAwesome name="google" size={24} color="#fff" style={styles.buttonIcon} />
-                    <Text style={styles.buttonText}>Iniciar sesión con Google</Text>
+                    <Text style={styles.buttonText}>{authInProgress ? 'Iniciando...' : 'Iniciar sesión con Google'}</Text>
                 </Pressable>
                 <TouchableOpacity onPress={() => navigation.navigate('ScanScreen')}>
                     <Text style={styles.guestButtonText}>Entrar como invitado</Text>

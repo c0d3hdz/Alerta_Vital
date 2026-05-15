@@ -1,30 +1,93 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ScrollView, Animated, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, SafeAreaView, ScrollView, TouchableOpacity, Vibration } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useBluetooth, monitorDevice } from '../hooks/useBluetooth';
 import { COLORS, SIZES } from '../constants/theme';
 import StatCard from '../components/StatCard';
 import PulseChart from '../components/PulseChart';
+import ECGChart from '../components/ECGChart';
 import BloodPressureChart from '../components/BloodPressureChart';
 import ConnectionStatus from '../components/ConnectionStatus';
+import { createSession, createReading, createAlert } from '../services/ApiService';
 
 export default function DashboardScreen({ route }) {
     const navigation = useNavigation();
     const deviceId = route?.params?.deviceId;
-    
+
     const { manager } = useBluetooth();
 
     const [activeTab, setActiveTab] = useState('PULSE');
 
     const [bpmActual, setBpmActual] = useState(0);
     const [spo2Actual, setSpo2Actual] = useState(98);
-    const [historialBpm, setHistorialBpm] = useState(Array(30).fill(60));
-    
+    const [historialBpm, setHistorialBpm] = useState(Array(150).fill(60));
+
     const [sysActual, setSysActual] = useState(0);
-    const [historialSys, setHistorialSys] = useState(Array(30).fill(120));
+    const [historialSys, setHistorialSys] = useState(Array(100).fill(120));
+    const [historialEcg, setHistorialEcg] = useState(Array(100).fill(0));
+    const ecgPhaseRef = useRef(0);
+    const bpmActualRef = useRef(bpmActual);
+    const spo2Ref = useRef(spo2Actual);
+    const sysRef = useRef(sysActual);
+    const readingCounterRef = useRef(0);
+    const [sessionId, setSessionId] = useState(null);
+    const [user, setUser] = useState(route?.params?.user || null);
+
+    const [alerts, setAlerts] = useState([]);
+    const [currentAlertSession, setCurrentAlertSession] = useState(null);
+    const currentAlertSessionRef = useRef(null);
+    const [activeAlert, setActiveAlert] = useState(null);
+    const activeAlertRef = useRef(null);
+    const historialEcgRef = useRef(historialEcg);
+    const monitorCleanupRef = useRef(null);
+    const [alertFlash, setAlertFlash] = useState(false);
 
     const [statusMsg, setStatusMsg] = useState('Esperando conexión...');
     const [isConnected, setIsConnected] = useState(false);
+    const [signalQuality, setSignalQuality] = useState('Sin señal');
+
+    const generateEcgSamples = (phase, count, isArrhythmia = false) => {
+        const template = [
+            0.10, 0.12, 0.14, 0.16, 0.18, 0.22, 0.28, 0.36, 0.60, 0.92,
+            1.15, 0.72, 0.48, 0.34, 0.24, 0.18, 0.16, 0.15, 0.14, 0.12,
+        ];
+        const result = [];
+        for (let i = 0; i < count; i++) {
+            const index = (phase + i) % template.length;
+            let value = template[index] + (Math.random() - 0.5) * 0.03;
+            if (isArrhythmia && index > 7 && index < 14) {
+                value += 0.1;
+            }
+            result.push(Math.max(0.05, Math.min(1.2, value)));
+        }
+        return result;
+    };
+
+    const appendEcgValues = (values) => {
+        setHistorialEcg((prev) => {
+            const sliceCount = values.length;
+            return [...prev.slice(sliceCount), ...values];
+        });
+    };
+
+    const normalizeRawEcg = (rawValue) => {
+        if (typeof rawValue !== 'number' || Number.isNaN(rawValue)) {
+            return null;
+        }
+        const clipped = Math.max(0, Math.min(rawValue, 4095));
+        const normalized = clipped / 4095;
+        return Math.max(0.08, Math.min(1.15, 0.25 + normalized * 0.85));
+    };
+
+    const buildEcgSegment = (nextValue, previousValue) => {
+        const prev = typeof previousValue === 'number' ? previousValue : 0.28;
+        const mid = (prev + nextValue) / 2;
+        return [
+            prev * 0.88 + mid * 0.12,
+            mid,
+            nextValue * 0.86 + mid * 0.14,
+        ];
+    };
 
     useEffect(() => {
         if (!deviceId) {
@@ -39,20 +102,51 @@ export default function DashboardScreen({ route }) {
         if (deviceId.startsWith('SIMULADO')) {
             setStatusMsg('Sensor Simulado Conectado (Prueba)');
             setIsConnected(true);
-            
+
+            let currentBpm = 72; // Ritmo cardíaco sano al reposo
+            let currentSys = 115; // Presión sistólica normal
+            let tickCount = 0;
+
             const intervalId = setInterval(() => {
-                // Generar BPM
-                const simulatedBpm = Math.floor(Math.random() * (100 - 60 + 1)) + 60;
+                tickCount++;
+
+                // 1. Simulación BPM: Deriva natural y suave
+                if (Math.random() > 0.6) {
+                    currentBpm += (Math.random() > 0.5 ? 1 : -1);
+                    currentBpm = Math.max(60, Math.min(85, currentBpm)); // Límite persona sana
+                }
+
+                let simulatedBpm = currentBpm;
+                const cycleLength = 600; // ~2.5 minutos de demo para ver alertas con más rapidez
+                const cyclePos = tickCount % cycleLength;
+
+                // Simular arritmia cada ciclo corto para probar la detección local
+                if (cyclePos >= 560 && cyclePos < 590) {
+                    if (Math.random() > 0.4) {
+                        currentBpm += (Math.random() > 0.5 ? 1 : -1);
+                        currentBpm = Math.max(60, Math.min(90, currentBpm));
+                    }
+                    if (Math.random() > 0.6) {
+                        simulatedBpm = currentBpm + (Math.random() > 0.5 ? 7 : -7);
+                    }
+                } else if (cyclePos >= 590 && cyclePos <= 598) {
+                    simulatedBpm = currentBpm + (Math.random() > 0.5 ? 35 : -25); // Altibajos bruscos reales
+                }
+
                 setBpmActual(simulatedBpm);
-                
-                // Generar SpO2
+
+                // 2. Generar SpO2 estable para persona sana (97% - 100%)
                 setSpo2Actual(prev => {
-                    const variance = Math.random() > 0.8 ? (Math.random() > 0.5 ? 1 : -1) : 0;
-                    return Math.min(100, Math.max(90, prev + variance));
+                    const variance = Math.random() > 0.9 ? (Math.random() > 0.5 ? 1 : -1) : 0;
+                    return Math.min(100, Math.max(97, prev + variance));
                 });
-                
-                // Generar Presión Arterial Sistólica (Sys 110-130)
-                const simSys = Math.floor(Math.random() * (130 - 110 + 1)) + 110;
+
+                // 3. Generar Presión Arterial Sistólica con deriva realista (110 - 125 mmHg)
+                if (Math.random() > 0.7) {
+                    currentSys += (Math.random() > 0.5 ? 1 : -1);
+                    currentSys = Math.max(110, Math.min(125, currentSys));
+                }
+                const simSys = currentSys;
                 setSysActual(simSys);
 
                 setHistorialBpm((prev) => {
@@ -61,49 +155,170 @@ export default function DashboardScreen({ route }) {
                     nuevoHistorial.push(simulatedBpm);
                     return nuevoHistorial;
                 });
-                
+
                 setHistorialSys((prev) => {
                     const nuevoHistorial = [...prev];
                     nuevoHistorial.shift();
                     nuevoHistorial.push(simSys);
                     return nuevoHistorial;
                 });
-            }, 1000);
+
+                if (sessionId && user) {
+                    readingCounterRef.current += 1;
+                    if (readingCounterRef.current % 4 === 0) {
+                        sendReading({
+                            bpm: simulatedBpm,
+                            spo2: spo2Ref.current,
+                            sys: simSys,
+                            ecg_value: historialEcgRef.current[historialEcgRef.current.length - 1] || 0,
+                        });
+                    }
+                }
+            }, 250); // Actualiza cada 250ms para un flujo más continuo y visual (tipo monitor médico)
 
             return () => clearInterval(intervalId);
         }
         // --- FIN CÓDIGO SIMULADOR ---
 
-        monitorDevice(deviceId, (bpm) => {
-            setStatusMsg('Conectado recibiendo datos');
-            setIsConnected(true);
-            setBpmActual(bpm);
-            
-            // Simulación temporal para SpO2 y Presión en dispositivo real hasta que se integre la lectura de bytes BLE
-            setSpo2Actual(prev => {
-              const variance = Math.random() > 0.8 ? (Math.random() > 0.5 ? 1 : -1) : 0;
-              return Math.min(100, Math.max(90, prev + variance));
-            });
-            const realSimSys = Math.floor(Math.random() * (130 - 110 + 1)) + 110;
-            
-            setSysActual(realSimSys);
+        let isMounted = true;
 
-            setHistorialBpm((prev) => {
-                const nuevoHistorial = [...prev];
-                nuevoHistorial.shift();
-                nuevoHistorial.push(bpm);
-                return nuevoHistorial;
+        const connectToDevice = async () => {
+            monitorCleanupRef.current?.remove?.();
+            const cleanup = await monitorDevice(deviceId, ({ bpm, leadOff, reason, rawEcg, quality }) => {
+                if (reason === 'ble-disconnect') {
+                    setStatusMsg('Sensor BLE desconectado');
+                    setIsConnected(false);
+                    setSignalQuality('Desconectado');
+                    setBpmActual(0);
+                    return;
+                }
+
+                if (leadOff) {
+                    setStatusMsg('Electrodos desconectados o señal inválida');
+                    setSignalQuality('Electrodos sueltos');
+                } else {
+                    setStatusMsg('Conectado recibiendo datos');
+                    if (typeof quality === 'number') {
+                        const qualityState = quality >= 80 ? 'Señal buena' : quality >= 50 ? 'Señal regular' : 'Señal baja';
+                        setSignalQuality(qualityState);
+                    } else {
+                        setSignalQuality('Señal activa');
+                    }
+                }
+
+                setIsConnected(true);
+
+                setHistorialBpm((prev) => {
+                    const nuevoHistorial = [...prev];
+                    nuevoHistorial.shift();
+                    nuevoHistorial.push(0);
+                    return nuevoHistorial;
+                });
+
+                const normalizedEcg = normalizeRawEcg(rawEcg);
+                const nextEcg = normalizedEcg !== null ? normalizedEcg : (leadOff ? 0.08 : 0.35);
+
+                setHistorialEcg((prev) => {
+                    const bufferSize = prev.length;
+                    const next = Math.max(0.05, Math.min(1.15, nextEcg));
+                    return [...prev.slice(1), next];
+                });
+
+                if (sessionId && user && !leadOff) {
+                    readingCounterRef.current += 1;
+                    if (readingCounterRef.current % 4 === 0) {
+                        sendReading({
+                            bpm,
+                            spo2: spo2Ref.current,
+                            sys: sysRef.current,
+                            ecg_value: historialEcgRef.current[historialEcgRef.current.length - 1] || 0,
+                        });
+                    }
+                }
             });
-            
-            setHistorialSys((prev) => {
-                const nuevoHistorial = [...prev];
-                nuevoHistorial.shift();
-                nuevoHistorial.push(realSimSys);
-                return nuevoHistorial;
-            });
-        });
+
+            if (isMounted && cleanup) {
+                monitorCleanupRef.current = cleanup;
+            }
+        };
+
+        connectToDevice();
+
+        return () => {
+            isMounted = false;
+            monitorCleanupRef.current?.remove?.();
+        };
 
     }, [deviceId]);
+
+    useEffect(() => {
+        if (isConnected && user && deviceId && !sessionId) {
+            const create = async () => {
+                try {
+                    const result = await createSession({
+                        user_id: user.id || user.google_id,
+                        device_id: deviceId,
+                        start_ts: Math.floor(Date.now() / 1000),
+                        end_ts: null,
+                        avg_bpm: null,
+                        avg_spo2: null,
+                        avg_sys: null,
+                    });
+                    setSessionId(result.id);
+                } catch (error) {
+                    console.warn('No se pudo crear sesión en el backend:', error);
+                }
+            };
+            create();
+        }
+    }, [isConnected, user, deviceId, sessionId]);
+
+    useEffect(() => {
+        spo2Ref.current = spo2Actual;
+    }, [spo2Actual]);
+
+    useEffect(() => {
+        sysRef.current = sysActual;
+    }, [sysActual]);
+
+    useEffect(() => {
+        historialEcgRef.current = historialEcg;
+    }, [historialEcg]);
+
+    const sendReading = async ({ bpm, spo2, sys, ecg_value }) => {
+        if (!user || !sessionId) return;
+        try {
+            await createReading({
+                session_id: sessionId,
+                timestamp: Math.floor(Date.now() / 1000),
+                bpm,
+                spo2,
+                sys,
+                ecg_value,
+            });
+        } catch (error) {
+            console.warn('No se pudo enviar lectura al backend:', error);
+        }
+    };
+
+    const handleSaveAlert = async (completedSession) => {
+        if (!user) return;
+        try {
+            await createAlert({
+                session_id: completedSession.id || null,
+                user_id: user.id || user.google_id,
+                type: completedSession.type,
+                message: completedSession.message,
+                start_ts: Math.floor(completedSession.startTimestamp / 1000),
+                end_ts: Math.floor(completedSession.endTimestamp / 1000),
+                avg_bpm: completedSession.avgBpm,
+                duration_sec: Math.round((completedSession.durationMs || 0) / 1000),
+                preview_data: completedSession.previewData,
+            });
+        } catch (error) {
+            console.warn('No se pudo guardar alerta en el backend:', error);
+        }
+    };
 
     const handleDisconnect = async () => {
         if (deviceId && manager) {
@@ -116,38 +331,183 @@ export default function DashboardScreen({ route }) {
         navigation.goBack();
     };
 
+    const formatTime = (timestamp) => timestamp ? new Date(timestamp).toLocaleTimeString() : '-';
+    const computeAverageBpm = (values) => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
+
+    const setCurrentAlertSessionState = (session) => {
+        currentAlertSessionRef.current = session;
+        setCurrentAlertSession(session);
+    };
+
+    const areAlertsEqual = (a, b) => {
+        if (!a && !b) return true;
+        if (!a || !b) return false;
+        return a.type === b.type && a.message === b.message;
+    };
+
+    const finalizeAlertSession = (session, latestBpm) => {
+        if (!session) return;
+        const previewData = [...session.previewData, latestBpm];
+        const avgBpm = computeAverageBpm(previewData);
+        const completedSession = {
+            ...session,
+            timestamp: session.startTimestamp,
+            endTimestamp: Date.now(),
+            avgBpm,
+            previewData,
+            durationMs: Date.now() - session.startTimestamp,
+        };
+        setAlerts((prev) => [{ ...completedSession }, ...prev].slice(0, 10));
+        handleSaveAlert(completedSession);
+    };
+
+    useEffect(() => {
+        const detected = evaluateBpmAlerts(historialBpm);
+        const latestBpm = historialBpm[historialBpm.length - 1] ?? bpmActual;
+        const currentSession = currentAlertSessionRef.current;
+
+        if (!areAlertsEqual(detected, activeAlert)) {
+            setActiveAlert(detected);
+        }
+
+        if (detected) {
+            if (!currentSession) {
+                setCurrentAlertSessionState({
+                    type: detected.type,
+                    message: detected.message,
+                    startTimestamp: Date.now(),
+                    previewData: [latestBpm],
+                });
+                return;
+            }
+
+            if (currentSession.type === detected.type && currentSession.message === detected.message) {
+                setCurrentAlertSessionState({
+                    ...currentSession,
+                    previewData: [...currentSession.previewData.slice(-30), latestBpm],
+                });
+                return;
+            }
+
+            finalizeAlertSession(currentSession, latestBpm);
+            setCurrentAlertSessionState({
+                type: detected.type,
+                message: detected.message,
+                startTimestamp: Date.now(),
+                previewData: [latestBpm],
+            });
+            return;
+        }
+
+        if (currentSession) {
+            finalizeAlertSession(currentSession, latestBpm);
+            setCurrentAlertSessionState(null);
+        }
+    }, [historialBpm]);
+
+    useEffect(() => {
+        bpmActualRef.current = bpmActual;
+    }, [bpmActual]);
+
+    useEffect(() => {
+        activeAlertRef.current = activeAlert;
+    }, [activeAlert]);
+
+    useEffect(() => {
+        if (!activeAlert) {
+            setAlertFlash(false);
+            return;
+        }
+
+        Vibration.vibrate([0, 150, 100, 150], false);
+        setAlertFlash(true);
+        const timeout = setTimeout(() => setAlertFlash(false), 800);
+        return () => clearTimeout(timeout);
+    }, [activeAlert]);
+
+    const evaluateBpmAlerts = (history) => {
+        if (!history || history.length < 60) return null;
+
+        const recent = history.slice(-60);
+        const windowShort = recent.slice(-20);
+        const deltas = windowShort.slice(1).map((value, index) => value - windowShort[index]);
+        const positiveTrend = deltas.filter((delta) => delta >= 1).length;
+        const negativeTrend = deltas.filter((delta) => delta <= -1).length;
+        const maxDelta = Math.max(...deltas.map((delta) => Math.abs(delta)));
+        const largeJumps = deltas.filter((delta) => Math.abs(delta) >= 8).length;
+        const irregularBurst = deltas.slice(-10).filter((delta) => Math.abs(delta) >= 6).length;
+        const mean = recent.reduce((total, value) => total + value, 0) / recent.length;
+        const variance = recent.reduce((total, value) => total + Math.pow(value - mean, 2), 0) / recent.length;
+        const stdDev = Math.sqrt(variance);
+        const lastBpm = recent[recent.length - 1];
+
+        if (maxDelta >= 20) {
+            return { type: 'anomaly', message: 'Cambio brusco de pulso detectado. Posible arritmia inmediata.' };
+        }
+
+        if (irregularBurst >= 4) {
+            return { type: 'warning', message: 'Variabilidad irregular detectada. Posible arritmia temprana.' };
+        }
+
+        if (largeJumps >= 2 && mean >= 75) {
+            return { type: 'warning', message: 'Picos irregulares en el pulso. Mantente atento.' };
+        }
+
+        if (positiveTrend >= 12 && mean >= 85) {
+            return { type: 'warning', message: 'Tendencia acelerada detectada. Posible evento arrítmico en breve.' };
+        }
+
+        if (negativeTrend >= 12 && mean <= 65) {
+            return { type: 'warning', message: 'Descenso sostenido del pulso. Vigila bradicardia temprana.' };
+        }
+
+        if (stdDev >= 7 && mean >= 80) {
+            return { type: 'warning', message: 'Variabilidad irregular alta. Riesgo de irregularidad cardiaca.' };
+        }
+
+        if (lastBpm >= 100) {
+            return { type: 'warning', message: 'Pulso elevado sostenido. Revisa el estado en corto plazo.' };
+        }
+
+        if (lastBpm <= 55) {
+            return { type: 'warning', message: 'Pulso bajo sostenido. Podría requerir atención.' };
+        }
+
+        return null;
+    };
+
     const renderTabSelector = () => (
-      <View style={styles.tabContainer}>
-        <TouchableOpacity 
-            style={[styles.tabButton, activeTab === 'PULSE' && styles.activeTabButton]}
-            onPress={() => setActiveTab('PULSE')}
-        >
-            <Text style={[styles.tabText, activeTab === 'PULSE' && styles.activeTabText]}>Frecuencia</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-            style={[styles.tabButton, activeTab === 'BLOOD_PRESSURE' && styles.activeTabButton]}
-            onPress={() => setActiveTab('BLOOD_PRESSURE')}
-        >
-            <Text style={[styles.tabText, activeTab === 'BLOOD_PRESSURE' && styles.activeTabText]}>P. Arterial</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-            style={[styles.tabButton, activeTab === 'ALERTS' && styles.activeTabButton]}
-            onPress={() => setActiveTab('ALERTS')}
-        >
-            <Text style={[styles.tabText, activeTab === 'ALERTS' && styles.activeTabText]}>Alertas</Text>
-        </TouchableOpacity>
-      </View>
+        <View style={styles.tabContainer}>
+            <TouchableOpacity
+                style={[styles.tabButton, activeTab === 'PULSE' && styles.activeTabButton]}
+                onPress={() => setActiveTab('PULSE')}
+            >
+                <Text style={[styles.tabText, activeTab === 'PULSE' && styles.activeTabText]}>Frecuencia</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+                style={[styles.tabButton, activeTab === 'BLOOD_PRESSURE' && styles.activeTabButton]}
+                onPress={() => setActiveTab('BLOOD_PRESSURE')}
+            >
+                <Text style={[styles.tabText, activeTab === 'BLOOD_PRESSURE' && styles.activeTabText]}>P. Arterial</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+                style={[styles.tabButton, activeTab === 'ALERTS' && styles.activeTabButton]}
+                onPress={() => setActiveTab('ALERTS')}
+            >
+                <Text style={[styles.tabText, activeTab === 'ALERTS' && styles.activeTabText]}>Alertas</Text>
+            </TouchableOpacity>
+        </View>
     );
 
     return (
         <SafeAreaView style={styles.safeArea}>
             <ScrollView contentContainerStyle={styles.container}>
-                <ConnectionStatus 
-                  statusMsg={statusMsg} 
-                  isConnected={isConnected} 
-                  onDisconnect={handleDisconnect} 
+                <ConnectionStatus
+                    statusMsg={statusMsg}
+                    isConnected={isConnected}
+                    onDisconnect={handleDisconnect}
                 />
 
                 {renderTabSelector()}
@@ -155,24 +515,42 @@ export default function DashboardScreen({ route }) {
                 {activeTab === 'PULSE' && (
                     <View style={styles.contentSection}>
                         <View style={styles.statsRow}>
-                            <StatCard 
-                            label="Frecuencia Cardíaca"
-                            value={bpmActual}
-                            unit="BPM"
-                            color={COLORS.primary}
+                            <StatCard
+                                label="Pulsaciones"
+                                value={bpmActual}
+                                unit="BPM"
+                                color={COLORS.primary}
                             />
-                            <StatCard 
-                            label="Oxígeno (SpO2)"
-                            value={spo2Actual}
-                            unit="%"
-                            color={COLORS.secondary}
+                            <StatCard
+                                label="Oxígeno (SpO2)"
+                                value={spo2Actual}
+                                unit="%"
+                                color={COLORS.secondary}
                             />
                         </View>
 
-                        {historialBpm.length > 0 && (
-                            <PulseChart 
-                            data={historialBpm} 
-                            color={COLORS.primary} 
+                        {activeAlert && (
+                            <View style={[
+                                styles.alertBanner,
+                                activeAlert.type === 'anomaly' ? styles.alertDanger : styles.alertWarning,
+                                alertFlash && styles.alertBannerFlash,
+                            ]}>
+                                <Text style={styles.alertBannerText}>{activeAlert.message}</Text>
+                            </View>
+                        )}
+
+                        {historialEcg.length > 0 && (
+                            <View style={styles.ecgHeaderRow}>
+                                <Text style={styles.ecgHeaderTitle}>Electrocardiograma</Text>
+                                <Text style={styles.ecgHeaderStatus}>{signalQuality}</Text>
+                            </View>
+                        )}
+                        {historialEcg.length > 0 && (
+                            <ECGChart
+                                data={historialEcg}
+                                color={'#10B981'}
+                                height={200}
+                                showTitle={false}
                             />
                         )}
                     </View>
@@ -181,20 +559,20 @@ export default function DashboardScreen({ route }) {
                 {activeTab === 'BLOOD_PRESSURE' && (
                     <View style={styles.contentSection}>
                         <View style={styles.statsRow}>
-                            <StatCard 
-                            label="Sistólica"
-                            value={sysActual}
-                            unit="mmHg"
-                            color={'#D97706'} 
+                            <StatCard
+                                label="Sistólica"
+                                value={sysActual}
+                                unit="mmHg"
+                                color={'#D97706'}
                             />
                         </View>
-                        
+
                         <View style={styles.infoCard}>
                             <Text style={styles.infoTitle}>Clasificación Presión Arterial</Text>
                             <Text style={styles.infoDetail}>
-                                {sysActual < 120 ? 'Normal' : 
-                                 sysActual <= 129 ? 'Elevada' : 
-                                 'Hipertensión Fase 1+'}
+                                {sysActual < 120 ? 'Normal' :
+                                    sysActual <= 129 ? 'Elevada' :
+                                        'Hipertensión Fase 1+'}
                             </Text>
                             <Text style={styles.infoSubText}>
                                 Valores en tiempo real obtenidos mediante sensor BLE.
@@ -202,7 +580,7 @@ export default function DashboardScreen({ route }) {
                         </View>
 
                         {historialSys.length > 0 && (
-                            <BloodPressureChart 
+                            <BloodPressureChart
                                 dataSys={historialSys}
                             />
                         )}
@@ -211,13 +589,100 @@ export default function DashboardScreen({ route }) {
 
                 {activeTab === 'ALERTS' && (
                     <View style={styles.contentSection}>
-                        <View style={styles.emptyAlertsContainer}>
-                            <Text style={styles.emptyAlertsIcon}>🔔</Text>
-                            <Text style={styles.emptyAlertsTitle}>No hay alertas activas</Text>
-                            <Text style={styles.emptyAlertsDesc}>
-                                Aquí se mostrarán las notificaciones cuando los signos vitales salgan de los rangos normales (próximamente).
-                            </Text>
-                        </View>
+                        {(!currentAlertSession && alerts.length === 0) ? (
+                            <View style={styles.emptyAlertsContainer}>
+                                <Text style={styles.emptyAlertsIcon}>🔔</Text>
+                                <Text style={styles.emptyAlertsTitle}>No hay alertas activas</Text>
+                                <Text style={styles.emptyAlertsDesc}>
+                                    Aquí se mostrarán las notificaciones cuando los signos vitales salgan de los rangos normales.
+                                </Text>
+                            </View>
+                        ) : (
+                            <View style={styles.alertListContainer}>
+                                {currentAlertSession && (
+                                    <View style={[styles.alertItem, currentAlertSession.type === 'anomaly' ? styles.alertItemDanger : styles.alertItemWarning]}>
+                                        <View style={styles.alertCardHeader}>
+                                            <Text style={styles.alertType}>{currentAlertSession.type === 'anomaly' ? 'Alerta activa' : 'Advertencia activa'}</Text>
+                                            <Text style={styles.alertStatus}>En curso</Text>
+                                        </View>
+                                        <Text style={styles.alertMessage}>{currentAlertSession.message}</Text>
+                                        <View style={styles.alertMetaRow}>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Inicio</Text>
+                                                <Text style={styles.alertMetaValue}>{formatTime(currentAlertSession.startTimestamp)}</Text>
+                                            </View>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Fin</Text>
+                                                <Text style={styles.alertMetaValue}>En curso</Text>
+                                            </View>
+                                        </View>
+                                        <View style={styles.alertMetaRow}>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Promedio</Text>
+                                                <Text style={styles.alertMetaValue}>{computeAverageBpm(currentAlertSession.previewData)} BPM</Text>
+                                            </View>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Duración</Text>
+                                                <Text style={styles.alertMetaValue}>{Math.round((Date.now() - currentAlertSession.startTimestamp) / 1000)} s</Text>
+                                            </View>
+                                        </View>
+                                        {currentAlertSession.previewData?.length > 0 && (
+                                            <View style={styles.alertPreviewChart}>
+                                                <PulseChart
+                                                    data={currentAlertSession.previewData}
+                                                    color={currentAlertSession.type === 'anomaly' ? '#DC2626' : '#F59E0B'}
+                                                    height={100}
+                                                    showTitle={false}
+                                                    showLegend={false}
+                                                    hideYAxis={true}
+                                                />
+                                            </View>
+                                        )}
+                                    </View>
+                                )}
+                                {alerts.map((alert, index) => (
+                                    <View key={`${alert.timestamp}-${index}`} style={[styles.alertItem, alert.type === 'anomaly' ? styles.alertItemDanger : styles.alertItemWarning]}>
+                                        <View style={styles.alertCardHeader}>
+                                            <Text style={styles.alertType}>{alert.type === 'anomaly' ? 'Alerta' : 'Advertencia'}</Text>
+                                            <Text style={styles.alertStatus}>Finalizada</Text>
+                                        </View>
+                                        <Text style={styles.alertMessage}>{alert.message}</Text>
+                                        <View style={styles.alertMetaRow}>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Inicio</Text>
+                                                <Text style={styles.alertMetaValue}>{formatTime(alert.startTimestamp)}</Text>
+                                            </View>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Fin</Text>
+                                                <Text style={styles.alertMetaValue}>{formatTime(alert.endTimestamp)}</Text>
+                                            </View>
+                                        </View>
+                                        <View style={styles.alertMetaRow}>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Promedio</Text>
+                                                <Text style={styles.alertMetaValue}>{alert.avgBpm} BPM</Text>
+                                            </View>
+                                            <View style={styles.alertMetaItem}>
+                                                <Text style={styles.alertMetaLabel}>Duración</Text>
+                                                <Text style={styles.alertMetaValue}>{Math.round((alert.durationMs || 0) / 1000)} s</Text>
+                                            </View>
+                                        </View>
+                                        {alert.previewData?.length > 0 && (
+                                            <View style={styles.alertPreviewChart}>
+                                                <PulseChart
+                                                    data={alert.previewData}
+                                                    color={alert.type === 'anomaly' ? '#DC2626' : '#F59E0B'}
+                                                    height={100}
+                                                    showTitle={false}
+                                                    showLegend={false}
+                                                    hideYAxis={true}
+                                                />
+                                            </View>
+                                        )}
+                                    </View>
+                                ))}
+                            </View>
+                        )}
                     </View>
                 )}
             </ScrollView>
@@ -328,5 +793,112 @@ const styles = StyleSheet.create({
         color: COLORS.textMuted,
         textAlign: 'center',
         lineHeight: 22,
+    },
+    alertBanner: {
+        marginHorizontal: SIZES.padding || 16,
+        borderRadius: 14,
+        padding: 14,
+        marginTop: 16,
+        marginBottom: 6,
+    },
+    alertBannerText: {
+        color: '#FFFFFF',
+        fontWeight: '700',
+        fontSize: 13,
+    },
+    alertWarning: {
+        backgroundColor: '#F59E0B',
+    },
+    alertDanger: {
+        backgroundColor: '#DC2626',
+    },
+    alertListContainer: {
+        paddingHorizontal: SIZES.padding || 16,
+        paddingVertical: 14,
+    },
+    alertItem: {
+        backgroundColor: '#FFFFFF',
+        borderRadius: 14,
+        padding: 14,
+        marginBottom: 12,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 4,
+        elevation: 2,
+    },
+    alertItemWarning: {
+        borderLeftWidth: 4,
+        borderLeftColor: '#F59E0B',
+    },
+    alertItemDanger: {
+        borderLeftWidth: 4,
+        borderLeftColor: '#DC2626',
+    },
+    alertType: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: COLORS.text,
+        marginBottom: 4,
+    },
+    alertStatus: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: COLORS.textMuted,
+    },
+    alertCardHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 10,
+    },
+    alertMetaRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        marginBottom: 10,
+    },
+    alertMetaItem: {
+        flex: 1,
+    },
+    alertMetaLabel: {
+        fontSize: 11,
+        color: COLORS.textMuted,
+        marginBottom: 4,
+        textTransform: 'uppercase',
+    },
+    alertMetaValue: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: COLORS.text,
+    },
+    alertPreviewChart: {
+        marginTop: 10,
+    },
+    ecgHeaderRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginHorizontal: SIZES.padding || 16,
+        marginTop: 4,
+    },
+    ecgHeaderTitle: {
+        fontSize: 16,
+        fontWeight: '700',
+        color: COLORS.text,
+    },
+    ecgHeaderStatus: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: '#10B981',
+    },
+    alertMessage: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: COLORS.text,
+        marginBottom: 6,
+    },
+    alertTime: {
+        fontSize: 12,
+        color: COLORS.textMuted,
     }
 });

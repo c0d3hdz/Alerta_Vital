@@ -10,7 +10,7 @@ export default function BloodPressureChart({ dataSys, colorSys = '#D97706' }) {
   const Gradient = () => (
     <Defs key={'gradient'}>
         <LinearGradient id={'gradientSys'} x1={'0%'} y1={'0%'} x2={'0%'} y2={'100%'}>
-            <Stop offset={'0%'} stopColor={colorSys} stopOpacity={0.2} />
+            <Stop offset={'0%'} stopColor={colorSys} stopOpacity={0.15} />
             <Stop offset={'100%'} stopColor={colorSys} stopOpacity={0.0} />
         </LinearGradient>
     </Defs>
@@ -22,7 +22,7 @@ export default function BloodPressureChart({ dataSys, colorSys = '#D97706' }) {
       
       <View style={styles.chartWrapper}>
         <YAxis
-            data={[40, 180]} /* Rango forzado como indicador izquierdo */
+            data={[40, 180]} 
             min={40}
             max={180}
             contentInset={{ top: 10, bottom: 10 }}
@@ -43,7 +43,7 @@ export default function BloodPressureChart({ dataSys, colorSys = '#D97706' }) {
             yMax={180} // Rango máximo (hipertensión alta)
             contentInset={{ top: 10, bottom: 10 }}
             curve={shape.curveMonotoneX}
-            svg={{ stroke: colorSys, strokeWidth: 3 }}
+            svg={{ stroke: colorSys, strokeWidth: 2 }}
           >
             <Grid svg={{ stroke: 'rgba(0,0,0,0.05)', strokeWidth: 1 }} />
             <Gradient />

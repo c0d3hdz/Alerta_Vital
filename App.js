@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, View, Text, Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import AppNavigator from './src/navigation/AppNavigator';
-import { solicitarPermisosBluetooth } from './src/hooks/useBluetooth';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 export default function App() {
   const [isReady, setIsReady] = useState(false);
@@ -11,10 +10,6 @@ export default function App() {
 
   useEffect(() => {
     const prepareApp = async () => {
-      const permisos = await solicitarPermisosBluetooth();
-      if (!permisos) {
-        console.warn('Permisos Bluetooth no concedidos. La aplicación no funcionará correctamente.'); 
-      }
       try {
         let storedUser = null;
         if (Platform.OS === 'web') {
@@ -42,7 +37,7 @@ export default function App() {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
         <ActivityIndicator size="large" color="#4285F4" />
-        <Text style={{ marginTop: 20 }}>Solicitando permisos...</Text>
+        <Text style={{ marginTop: 20 }}>Cargando aplicación...</Text>
       </View>
     );
   }

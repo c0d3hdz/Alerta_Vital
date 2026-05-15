@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Platform, PermissionsAndroid, Alert} from 'react-native';
 import { Buffer } from 'buffer';
-import { manager, SERVICE_UUID, CHARACTERISTIC_UUID } from '../services/BluetoothService';
+import { getManager, SERVICE_UUID, CHARACTERISTIC_UUID } from '../services/BluetoothService';
 
 export const solicitarPermisosBluetooth = async () => {
   if (Platform.OS === 'ios') return true;
@@ -21,8 +21,6 @@ export const solicitarPermisosBluetooth = async () => {
         }
       );
       
-      // En API < 31 los permisos de BT son automáticos al instalar,
-      // solo validamos que no haya rechazado la ubicación.
       if (concedido !== PermissionsAndroid.RESULTS.GRANTED) {
          Alert.alert('Permiso denegado', 'Se requiere acceso a la ubicación en versiones antiguas de Android para usar el Bluetooth.');
       }
@@ -79,19 +77,31 @@ export const solicitarPermisosBluetooth = async () => {
 export const monitorDevice = async (deviceId, onDataReceived) => {
   if (Platform.OS === 'web') {
     console.warn("La simulación Web no soporta Bluetooth real.");
-    return;
+    return null;
   }
 
+  const manager = getManager();
+  if (!manager) return null;
+
   try {
-    const device = await manager.connectToDevice(deviceId);
+    const connectionOptions = Platform.OS === 'android' ? { autoConnect: false, transport: 1 } : null;
+    const device = await manager.connectToDevice(deviceId, connectionOptions);
     await device.discoverAllServicesAndCharacteristics();
 
-    manager.onDeviceDisconnected(deviceId, (error, device) => {
-      console.log("Sensor apagado o fuera de rango");
-      onDataReceived(0); // Forzar 0 BPM inmediato
+    if (Platform.OS === 'android') {
+      try {
+        await device.requestMTU(512);
+      } catch (e) {
+        console.log("El dispositivo no soporta MTU 512, continuamos con la configuración local...");
+      }
+    }
+
+    const disconnectSubscription = manager.onDeviceDisconnected(deviceId, (error, disconnectedDevice) => {
+      console.log("Sensor apagado o fuera de rango", error, disconnectedDevice?.id);
+      onDataReceived({ bpm: 0, flags: 0, leadOff: true, reason: 'ble-disconnect' });
     });
 
-    device.monitorCharacteristicForService(
+    const charSubscription = device.monitorCharacteristicForService(
       SERVICE_UUID,
       CHARACTERISTIC_UUID,
       (error, characteristic) => {
@@ -100,21 +110,78 @@ export const monitorDevice = async (deviceId, onDataReceived) => {
           return;
         }
 
-        if (characteristic?.value) {
-          try {
-            const buffer = Buffer.from(characteristic.value, 'base64');
-            if (buffer.length === 4 && buffer[0] === 255) {
-              const bpm = buffer[2];
-              onDataReceived(bpm);
+        if (!characteristic?.value) return;
+
+        try {
+          const buffer = Buffer.from(characteristic.value, 'base64');
+          console.log('BLE packet received:', buffer.length, buffer);
+          if (buffer.length === 5) {
+            const rawEcg = (buffer[0] << 8) | buffer[1];
+            const bpm = buffer[2];
+            const quality = buffer[3];
+            const flags = buffer[4];
+            const leadOff = (flags & 0x01) !== 0;
+            const validBpm = !leadOff && bpm > 0 && bpm < 220;
+
+            onDataReceived({
+              bpm: validBpm ? bpm : 0,
+              flags,
+              leadOff,
+              quality,
+              rawEcg,
+              isValid: validBpm,
+            });
+          } else if (buffer.length === 4) {
+            const rawEcg = buffer[0];
+            const bpm = buffer[1];
+            const quality = buffer[2];
+            const flags = buffer[3];
+            const leadOff = (flags & 0x03) !== 0;
+            const validBpm = !leadOff && bpm > 0 && bpm < 220;
+
+            onDataReceived({
+              bpm: validBpm ? bpm : 0,
+              flags,
+              leadOff,
+              quality,
+              rawEcg,
+              isValid: validBpm,
+            });
+          } else {
+            const text = Buffer.from(characteristic.value, 'base64').toString('utf8').trim();
+            if (text.includes(',')) {
+              const parts = text.split(',').map((part) => part.trim());
+              const parsedBpm = Number(parts[1] ?? parts[0]);
+              onDataReceived({
+                bpm: Number.isFinite(parsedBpm) ? parsedBpm : 0,
+                flags: 0,
+                leadOff: false,
+                quality: null,
+                rawEcg: null,
+                isValid: Number.isFinite(parsedBpm),
+              });
+            } else {
+              onDataReceived({ bpm: 0, flags: 0, leadOff: true, quality: null, rawEcg: null, isValid: false, reason: 'invalid-packet' });
             }
-          } catch (e) {
-            console.log("Error leyendo Buffer BLE", e);
           }
+        } catch (e) {
+          console.log("Error leyendo Buffer BLE", e);
+          onDataReceived({ bpm: 0, flags: 0, leadOff: true, quality: null, rawEcg: null, isValid: false, reason: 'parse-error' });
         }
       }
     );
+
+    return {
+      disconnectSubscription,
+      charSubscription,
+      remove: () => {
+        disconnectSubscription?.remove?.();
+        charSubscription?.remove?.();
+      },
+    };
   } catch (error) {
     console.log("Error conectando a BLE:", error);
+    return null;
   }
 };
 
@@ -124,6 +191,7 @@ export function useBluetooth() {
   const [bluetoothState, setBluetoothState] = useState(null);
 
   useEffect(() => {
+    const manager = getManager();
     if (Platform.OS === 'web' || !manager) return;
     const subscription = manager.onStateChange((state) => {
       setBluetoothState(state);
@@ -136,6 +204,7 @@ export function useBluetooth() {
 
   const enableBluetooth = useCallback(async () => {
     if (Platform.OS === 'web') return false;
+    const manager = getManager();
     if (!manager) return false;
 
     try {
@@ -181,6 +250,8 @@ export function useBluetooth() {
       console.warn("Permisos de Bluetooth denegados.");
       return;
     }
+    const manager = getManager();
+    if (!manager) return;
     const currentState = await manager.state();
     if (currentState === 'PoweredOff' || currentState === 'Unknown') {
       const enabled = await enableBluetooth();
@@ -193,20 +264,41 @@ export function useBluetooth() {
     setDevices([]);
     setIsScanning(true);
 
-    manager.startDeviceScan(null, null, (error, device) => {
+    const scanOptions = Platform.OS === 'android'
+      ? { scanMode: 2, allowDuplicates: false }
+      : { allowDuplicates: false };
+
+    manager.startDeviceScan(null, scanOptions, (error, device) => {
       if (error) {
         console.log("Error en escaneo BLE:", error);
         setIsScanning(false);
         return;
       }
 
-      if (device && device.name) {
-        setDevices(prev => {
-          if (!prev.find(d => d.id === device.id)) {
-            return [...prev, device];
-          }
-          return prev;
+      if (device && device.id) {
+        const deviceName = `${device.name || device.localName || ''}`.toUpperCase();
+        const normalizedServiceUUID = SERVICE_UUID.toUpperCase().replace(/-/g, '');
+        const hasCorrectUUID = !!device.serviceUUIDs?.some((uuid) => {
+          const candidate = `${uuid}`.toUpperCase().replace(/-/g, '');
+          return candidate === normalizedServiceUUID;
         });
+
+        const isTargetDevice =
+          deviceName.includes('ESP32') ||
+          deviceName.includes('ECG') ||
+          deviceName.includes('MONITOR') ||
+          deviceName.includes('VITAL') ||
+          deviceName.includes('AI') ||
+          hasCorrectUUID;
+
+        if (isTargetDevice) {
+          setDevices((prev) => {
+            if (!prev.find((d) => d.id === device.id)) {
+              return [...prev, device];
+            }
+            return prev;
+          });
+        }
       }
     });
 
@@ -217,6 +309,7 @@ export function useBluetooth() {
   }, [bluetoothState, enableBluetooth]);
 
   const stopScanning = useCallback(() => {
+    const manager = getManager();
     if (manager) manager.stopDeviceScan();
     setIsScanning(false);
   }, []);
@@ -227,7 +320,7 @@ export function useBluetooth() {
     startScanning,
     stopScanning,
     enableBluetooth,
-    manager,
+    manager: getManager(),
     bluetoothState,
     isBluetoothOn,
   };
